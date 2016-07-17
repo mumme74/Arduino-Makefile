@@ -34,11 +34,25 @@ endif
 include $(ARDMK_DIR)/Common.mk
 
 ARDMK_VENDOR        = teensy
-ARDUINO_CORE_PATH   = $(ARDUINO_DIR)/hardware/teensy/cores/teensy3
-BOARDS_TXT          = $(ARDUINO_DIR)/hardware/$(ARDMK_VENDOR)/boards.txt
+
+ifeq ("$(wildcard $(ARDUINO_DIR)/hardware/teensy/cores/teensy3)","")
+    ARDUINO_CORE_PATH   = $(ARDUINO_DIR)/hardware/teensy/avr/cores/teensy3
+else
+    ARDUINO_CORE_PATH   = $(ARDUINO_DIR)/hardware/teensy/cores/teensy3
+endif
+
+ifeq ("$(wildcard $(ARDUINO_DIR)/hardware/$(ARDMK_VENDOR)/boards.txt)","")
+    BOARDS_TXT          = $(ARDUINO_DIR)/hardware/$(ARDMK_VENDOR)/avr/boards.txt
+else
+    BOARDS_TXT          = $(ARDUINO_DIR)/hardware/$(ARDMK_VENDOR)/boards.txt
+endif
 
 ifndef F_CPU
     F_CPU=96000000
+endif
+
+ifndef PARSE_TEENSY_ROW
+    PARSE_TEENSY_ROW = $(shell grep -v "^\#" "$(BOARDS_TXT)" | grep $(1).$(2) )
 endif
 
 ifndef PARSE_TEENSY
@@ -46,9 +60,18 @@ ifndef PARSE_TEENSY
     PARSE_TEENSY = $(shell grep -v "^\#" "$(BOARDS_TXT)" | grep $(1).$(2) | cut -d = -f 2,3 )
 endif
 
-ARCHITECTURE  = $(call PARSE_TEENSY,$(BOARD_TAG),build.architecture)
-AVR_TOOLS_DIR = $(call dir_if_exists,$(ARDUINO_DIR)/hardware/tools/$(ARCHITECTURE))
+ifndef ARCHITECTURE
+    ARCHITECTURE  := $(call PARSE_TEENSY,$(BOARD_TAG),build.architecture)
+    # check if architecture is empty
+    ifndef ARCHITECTURE
+        # catch it from .board.toolchain ie /arm/bin/
+        ARCHITECTURE = $(patsubst %/,%,$(dir $(patsubst %/,%,$(call PARSE_TEENSY,$(BOARD_TAG),build.toolchain))))
+    endif
+endif
 
+ifndef
+    AVR_TOOLS_DIR = $(call dir_if_exists,$(ARDUINO_DIR)/hardware/tools/$(ARCHITECTURE))
+endif
 ########################################################################
 # command names
 
@@ -127,6 +150,12 @@ endif
 # processor stuff
 ifndef MCU
     MCU := $(call PARSE_TEENSY,$(BOARD_TAG),build.cpu)
+    # new board.txt format 1.6.9
+    ifndef MCU
+        cpuflags = $(call PARSE_TEENSY,$(BOARD_TAG),build.flags.cpu)
+        MCU := $(shell echo $(cpuflags) | grep -Po "(?<=\\-mcpu=)(\S+)") $(cpuflags) # must have mthumb etc
+        undefine cpuflags
+    endif
 endif
 
 ifndef MCU_FLAG_NAME
@@ -135,26 +164,52 @@ endif
 
 ########################################################################
 # FLAGS
+# preproccesor flags
+ifeq ($(call PARSE_TEENSY,$(BOARD_TAG),build.option),)
+    CPPFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.flags.common)
+    CPPFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.flags.defs)
+else
+    CPPFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.option)
+endif
+
 ifndef USB_TYPE
     USB_TYPE = USB_SERIAL
 endif
-
 CPPFLAGS += -DLAYOUT_US_ENGLISH -D$(USB_TYPE)
 
-CPPFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.option)
+# c++ compiler flags
+ifeq ($(call PARSE_TEENSY,$(BOARD_TAG),build.cppoption),)
+    CXXFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.flags.cpp)
+else
+    CXXFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.cppoption)
+endif
 
-CXXFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.cppoption)
 ifeq ("$(call PARSE_TEENSY,$(BOARD_TAG),build.gnu0x)","true")
     CXXFLAGS_STD      += -std=gnu++0x
+else ifneq ($(shell echo $(flags)|grep "(\\-std=\w+)"),)
+    CXXFLAGS_STD      += $(shell echo $(CXXFLAGS)|grep "(\\-std=\w+)")
 endif
 
 ifeq ("$(call PARSE_TEENSY,$(BOARD_TAG),build.elide_constructors)", "true")
     CXXFLAGS      += -felide-constructors
 endif
 
-LDFLAGS +=  $(call PARSE_TEENSY,$(BOARD_TAG),build.linkoption) $(call PARSE_TEENSY,$(BOARD_TAG),build.additionalobject)
+# linker flags
+ifeq ($(call PARSE_TEENSY,$(BOARD_TAG),build.linkoption),)
+    LD_TMP := $(shell echo $(call PARSE_TEENSY_ROW,$(BOARD_TAG),build.flags.ld) | sed  -e 's/[^=]*=//')
+    LD_TMP2 := $(subst {extra.time.local},$(shell date +%s),$(LD_TMP))
+    LDFLAGS += $(subst {build.core.path},$(ARDUINO_CORE_PATH),$(LD_TMP2))
+else
+    LDFLAGS +=  $(call PARSE_TEENSY,$(BOARD_TAG),build.linkoption)
+endif
 
-ifneq ("$(call PARSE_TEENSY,$(BOARD_TAG),build.linkscript)",)
+ifeq ($(call PARSE_TEENSY,$(BOARD_TAG),build.additionalobject),)
+    LDFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.flags.libs)
+else
+    LDFLAGS += $(call PARSE_TEENSY,$(BOARD_TAG),build.additionalobject)
+endif
+
+ifneq ($(call PARSE_TEENSY,$(BOARD_TAG),build.linkscript),)
     LDFLAGS   += -T$(ARDUINO_CORE_PATH)/$(call PARSE_TEENSY,$(BOARD_TAG),build.linkscript)
 endif
 
